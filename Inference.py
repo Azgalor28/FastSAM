@@ -1,7 +1,9 @@
-from ultralytics import YOLO
-from utils.tools import *
 import argparse
+from fastsam import FastSAM, FastSAMPrompt 
 import ast
+import torch
+from PIL import Image
+from utils.tools import convert_box_xywh_to_xyxy
 
 
 def parse_args():
@@ -40,14 +42,20 @@ def parse_args():
         default="[0]",
         help="[1,0] 0:background, 1:foreground",
     )
-    parser.add_argument("--box_prompt", type=str, default="[0,0,0,0]", help="[x,y,w,h]")
+    parser.add_argument("--box_prompt", type=str, default="[[0,0,0,0]]", help="[[x,y,w,h],[x2,y2,w2,h2]] support multiple boxes")
     parser.add_argument(
         "--better_quality",
         type=str,
         default=False,
         help="better quality using morphologyEx",
     )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps"
+        if torch.backends.mps.is_available()
+        else "cpu"
+    )
     parser.add_argument(
         "--device", type=str, default=device, help="cuda:[0,1,2,3,4] or cpu"
     )
@@ -65,77 +73,48 @@ def parse_args():
 
 def main(args):
     # load model
-    model = YOLO(args.model_path)
+    model = FastSAM(args.model_path)
     args.point_prompt = ast.literal_eval(args.point_prompt)
-    args.box_prompt = ast.literal_eval(args.box_prompt)
+    args.box_prompt = convert_box_xywh_to_xyxy(ast.literal_eval(args.box_prompt))
     args.point_label = ast.literal_eval(args.point_label)
-    results = model(
-        args.img_path,
-        imgsz=args.imgsz,
+    input = Image.open(args.img_path)
+    input = input.convert("RGB")
+    everything_results = model(
+        input,
         device=args.device,
         retina_masks=args.retina,
-        iou=args.iou,
+        imgsz=args.imgsz,
         conf=args.conf,
-        max_det=300,
-    )
-    if args.box_prompt[2] != 0 and args.box_prompt[3] != 0:
-        annotations = prompt(results, args, box=True)
-        annotations = np.array([annotations])
-        fast_process(
-            annotations=annotations,
-            args=args,
-            mask_random_color=args.randomcolor,
-            bbox=convert_box_xywh_to_xyxy(args.box_prompt),
+        iou=args.iou    
         )
-
+    bboxes = None
+    points = None
+    point_label = None
+    prompt_process = FastSAMPrompt(input, everything_results, device=args.device)
+    if args.box_prompt[0][2] != 0 and args.box_prompt[0][3] != 0:
+            ann = prompt_process.box_prompt(bboxes=args.box_prompt)
+            bboxes = args.box_prompt
     elif args.text_prompt != None:
-        results = format_results(results[0], 0)
-        annotations = prompt(results, args, text=True)
-        annotations = np.array([annotations])
-        fast_process(
-            annotations=annotations, args=args, mask_random_color=args.randomcolor
-        )
-
+        ann = prompt_process.text_prompt(text=args.text_prompt)
     elif args.point_prompt[0] != [0, 0]:
-        results = format_results(results[0], 0)
-        annotations = prompt(results, args, point=True)
-        # list to numpy
-        annotations = np.array([annotations])
-        fast_process(
-            annotations=annotations,
-            args=args,
-            mask_random_color=args.randomcolor,
-            points=args.point_prompt,
+        ann = prompt_process.point_prompt(
+            points=args.point_prompt, pointlabel=args.point_label
         )
-
+        points = args.point_prompt
+        point_label = args.point_label
     else:
-        fast_process(
-            annotations=results[0].masks.data,
-            args=args,
-            mask_random_color=args.randomcolor,
-        )
+        ann = prompt_process.everything_prompt()
+    prompt_process.plot(
+        annotations=ann,
+        output_path=args.output+args.img_path.split("/")[-1],
+        bboxes = bboxes,
+        points = points,
+        point_label = point_label,
+        withContours=args.withContours,
+        better_quality=args.better_quality,
+    )
 
 
-def prompt(results, args, box=None, point=None, text=None):
-    ori_img = cv2.imread(args.img_path)
-    ori_h = ori_img.shape[0]
-    ori_w = ori_img.shape[1]
-    if box:
-        mask, idx = box_prompt(
-            results[0].masks.data,
-            convert_box_xywh_to_xyxy(args.box_prompt),
-            ori_h,
-            ori_w,
-        )
-    elif point:
-        mask, idx = point_prompt(
-            results, args.point_prompt, args.point_label, ori_h, ori_w
-        )
-    elif text:
-        mask, idx = text_prompt(results, args.text_prompt, args.img_path,args.device)
-    else:
-        return None
-    return mask
 
 
 if __name__ == "__main__":

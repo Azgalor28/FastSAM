@@ -25,12 +25,12 @@ class Predictor(BasePredictor):
             default="FastSAM-x",
         ),
         iou: float = Input(
-            description="iou threshold for filtering the annotations", default=0.9
+            description="iou threshold for filtering the annotations", default=0.7
         ),
         text_prompt: str = Input(
-            description='use text prompt eg: "a dog"', default=None
+            description='use text prompt eg: "a black dog"', default=None
         ),
-        conf: float = Input(description="object confidence threshold", default=0.4),
+        conf: float = Input(description="object confidence threshold", default=0.25),
         retina: bool = Input(
             description="draw high-resolution segmentation masks", default=True
         ),
@@ -53,12 +53,19 @@ class Predictor(BasePredictor):
             shutil.rmtree(out_path)
         os.makedirs(out_path, exist_ok=True)
 
-
+        device = torch.device(
+            "cuda"
+            if torch.cuda.is_available()
+            else "mps"
+            if torch.backends.mps.is_available()
+            else "cpu"
+        )
+        
         args = argparse.Namespace(
             better_quality=better_quality,
             box_prompt=box_prompt,
             conf=conf,
-            device=torch.device("cuda"),
+            device=device,
             img_path=str(input_image),
             imgsz=1024,
             iou=iou,

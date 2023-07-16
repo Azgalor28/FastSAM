@@ -4,15 +4,19 @@ import matplotlib.pyplot as plt
 import cv2
 import torch
 import os
+import sys
 import clip
 
 
 def convert_box_xywh_to_xyxy(box):
-    x1 = box[0]
-    y1 = box[1]
-    x2 = box[0] + box[2]
-    y2 = box[1] + box[3]
-    return [x1, y1, x2, y2]
+    if len(box) == 4:
+        return [box[0], box[1], box[0] + box[2], box[1] + box[3]]
+    else:
+        result = []
+        for b in box:
+            b = convert_box_xywh_to_xyxy(b)
+            result.append(b)               
+    return result
 
 
 def segment_image(image, bbox):
@@ -50,7 +54,7 @@ def format_results(result, filter=0):
     return annotations
 
 
-def filter_masks(annotations):  # filte the overlap mask
+def filter_masks(annotations):  # filter the overlap mask
     annotations.sort(key=lambda x: x["area"], reverse=True)
     to_remove = set()
     for i in range(0, len(annotations)):
@@ -98,7 +102,14 @@ def fast_process(
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     original_h = image.shape[0]
     original_w = image.shape[1]
+    if sys.platform == "darwin":
+            plt.switch_backend("TkAgg")
     plt.figure(figsize=(original_w/100, original_h/100))
+    # Add subplot with no margin.
+    plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
+    plt.margins(0, 0)
+    plt.gca().xaxis.set_major_locator(plt.NullLocator())
+    plt.gca().yaxis.set_major_locator(plt.NullLocator())
     plt.imshow(image)
     if args.better_quality == True:
         if isinstance(annotations[0], torch.Tensor):
@@ -118,7 +129,7 @@ def fast_process(
             random_color=mask_random_color,
             bbox=bbox,
             points=points,
-            pointlabel=args.point_label,
+            point_label=args.point_label,
             retinamask=args.retina,
             target_height=original_h,
             target_width=original_w,
@@ -132,7 +143,7 @@ def fast_process(
             random_color=args.randomcolor,
             bbox=bbox,
             points=points,
-            pointlabel=args.point_label,
+            point_label=args.point_label,
             retinamask=args.retina,
             target_height=original_h,
             target_width=original_w,
@@ -180,8 +191,7 @@ def fast_process(
     cv2.imwrite(os.path.join(save_path, result_name), cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
 
 
-
-#   CPU post process
+# CPU post process
 def fast_show_mask(
     annotation,
     ax,
@@ -254,7 +264,7 @@ def fast_show_mask_gpu(
     random_color=False,
     bbox=None,
     points=None,
-    pointlabel=None,
+    point_label=None,
     retinamask=True,
     target_height=960,
     target_width=960,
@@ -295,14 +305,14 @@ def fast_show_mask_gpu(
     # draw point
     if points is not None:
         plt.scatter(
-            [point[0] for i, point in enumerate(points) if pointlabel[i] == 1],
-            [point[1] for i, point in enumerate(points) if pointlabel[i] == 1],
+            [point[0] for i, point in enumerate(points) if point_label[i] == 1],
+            [point[1] for i, point in enumerate(points) if point_label[i] == 1],
             s=20,
             c="y",
         )
         plt.scatter(
-            [point[0] for i, point in enumerate(points) if pointlabel[i] == 0],
-            [point[1] for i, point in enumerate(points) if pointlabel[i] == 0],
+            [point[0] for i, point in enumerate(points) if point_label[i] == 0],
+            [point[1] for i, point in enumerate(points) if point_label[i] == 0],
             s=20,
             c="m",
         )
@@ -317,7 +327,7 @@ def fast_show_mask_gpu(
 @torch.no_grad()
 def retriev(
     model, preprocess, elements: [Image.Image], search_text: str, device
-) -> int:
+):
     preprocessed_images = [preprocess(image).to(device) for image in elements]
     tokenized_text = clip.tokenize([search_text]).to(device)
     stacked_images = torch.stack(preprocessed_images)
@@ -329,8 +339,11 @@ def retriev(
     return probs[:, 0].softmax(dim=0)
 
 
-def crop_image(annotations, image_path):
-    image = Image.open(image_path)
+def crop_image(annotations, image_like):
+    if isinstance(image_like, str):
+        image = Image.open(image_like)
+    else:
+        image = image_like
     ori_w, ori_h = image.size
     mask_h, mask_w = annotations[0]["segmentation"].shape
     if ori_w != mask_w or ori_h != mask_h:
@@ -338,19 +351,16 @@ def crop_image(annotations, image_path):
     cropped_boxes = []
     cropped_images = []
     not_crop = []
-    filter_id = []
-    # annotations, _ = filter_masks(annotations)
-    # filter_id = list(_)
+    origin_id = []
     for _, mask in enumerate(annotations):
         if np.sum(mask["segmentation"]) <= 100:
-            filter_id.append(_)
             continue
+        origin_id.append(_)
         bbox = get_bbox_from_mask(mask["segmentation"])  # mask 的 bbox
         cropped_boxes.append(segment_image(image, bbox))  # 保存裁剪的图片
         # cropped_boxes.append(segment_image(image,mask["segmentation"]))
         cropped_images.append(bbox)  # 保存裁剪的图片的bbox
-
-    return cropped_boxes, cropped_images, not_crop, filter_id, annotations
+    return cropped_boxes, cropped_images, not_crop, origin_id, annotations
 
 
 def box_prompt(masks, bbox, target_height, target_width):
@@ -390,22 +400,23 @@ def point_prompt(masks, points, point_label, target_height, target_width):  # nu
             for point in points
         ]
     onemask = np.zeros((h, w))
+    masks = sorted(masks, key=lambda x: x['area'], reverse=True)
     for i, annotation in enumerate(masks):
         if type(annotation) == dict:
-            mask = annotation["segmentation"]
+            mask = annotation['segmentation']
         else:
             mask = annotation
         for i, point in enumerate(points):
             if mask[point[1], point[0]] == 1 and point_label[i] == 1:
-                onemask += mask
+                onemask[mask] = 1
             if mask[point[1], point[0]] == 1 and point_label[i] == 0:
-                onemask -= mask
+                onemask[mask] = 0
     onemask = onemask >= 1
     return onemask, 0
 
 
-def text_prompt(annotations, text, img_path,device):
-    cropped_boxes, cropped_images, not_crop, filter_id, annotaions = crop_image(
+def text_prompt(annotations, text, img_path, device, wider=False, threshold=0.9):
+    cropped_boxes, cropped_images, not_crop, origin_id, annotations_ = crop_image(
         annotations, img_path
     )
     clip_model, preprocess = clip.load("ViT-B/32", device=device)
@@ -414,5 +425,18 @@ def text_prompt(annotations, text, img_path,device):
     )
     max_idx = scores.argsort()
     max_idx = max_idx[-1]
-    max_idx += sum(np.array(filter_id) <= int(max_idx))
-    return annotaions[max_idx]["segmentation"], max_idx
+    max_idx = origin_id[int(max_idx)]
+
+    # find the biggest mask which contains the mask with max score
+    if wider:
+        mask0 = annotations_[max_idx]["segmentation"]
+        area0 = np.sum(mask0)
+        areas = [(i, np.sum(mask["segmentation"])) for i, mask in enumerate(annotations_) if i in origin_id]
+        areas = sorted(areas, key=lambda area: area[1], reverse=True)
+        indices = [area[0] for area in areas]
+        for index in indices:
+            if index == max_idx or np.sum(annotations_[index]["segmentation"] & mask0) / area0 > threshold:
+                max_idx = index
+                break
+
+    return annotations_[max_idx]["segmentation"], max_idx
