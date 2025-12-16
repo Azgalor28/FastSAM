@@ -15,7 +15,8 @@ seaborn>=0.11.0
 gradio==3.35.2
 
 # Ultralytics-----------------------------------
-ultralytics == 8.0.120
+ultralytics==8.3.226
 
 numpy>=1.22.2 # not directly required, pinned by Snyk to avoid a vulnerability
 setuptools>=70.0.0 # not directly required, pinned by Snyk to avoid a vulnerability
+fonttools>=4.61.0 # not directly required, pinned by Snyk to avoid a vulnerability
